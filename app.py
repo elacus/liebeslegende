@@ -22,13 +22,6 @@ GEMINI_MODELS = (
 GEMINI_FALLBACK_ERROR_CODES = {404, 408, 429, 500, 502, 503, 504}
 CAMEO_PAGE_COUNT = 5
 MAX_CLOUDFLARE_POEM_ATTEMPTS = 3
-OUTPUT_LANGUAGE_CODES = {
-    "deutsch": "de",
-    "english": "en",
-    "français": "fr",
-    "español": "es",
-    "italiano": "it",
-}
 CLOUDFLARE_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
 CLOUDFLARE_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
 CLOUDFLARE_VISION_DOC_URL = (
@@ -79,8 +72,8 @@ TEXT = {
         "spinner": "Fünf Gedichtseiten und passende Illustrationen werden erstellt …",
         "story_title": "📜 Dein persönliches Märchenbuch",
         "fallback": "Das Modell {model} war vorübergehend nicht verfügbar. Gedicht und Illustration wurden mit einem Ausweichmodell erstellt.",
-        "incomplete_output": "Das Modell hat für eine Seite nicht das angeforderte Gedicht mit 3 AABB-Strophen à 4 Zeilen und eine Illustration geliefert. Bitte versuche es erneut.",
-        "incomplete_poem_only": "Das Modell hat nicht fünf Gedichte mit jeweils 3 AABB-Strophen à 4 Zeilen geliefert. Bitte versuche es erneut.",
+        "incomplete_output": "Das Modell hat für eine Seite kein Gedicht mit 12 Zeilen in 3 Strophen à 4 Zeilen und keine Illustration geliefert. Bitte versuche es erneut.",
+        "incomplete_poem_only": "Das Modell hat nicht fünf Gedichte mit jeweils 12 Zeilen in 3 Strophen à 4 Zeilen geliefert. Bitte versuche es erneut.",
         "quota_error": "Das Kontingent für die Gemini-Bildgenerierung dieses Projekts ist ausgeschöpft (die API meldet ein Free-Tier-Limit von 0). Prüfe die Projektlimits und Abrechnung. Ein Fallback-Modell kann bei ebenfalls ausgeschöpftem Kontingent auch fehlschlagen.\n\nHinweis: Laut API kannst du es in {retry_delay} erneut versuchen.",
         "retry_later": "einer Weile",
         "missing_key": "Kein API-Schlüssel in `.streamlit/secrets.toml` gefunden!",
@@ -119,8 +112,8 @@ TEXT = {
         "spinner": "Creating five poem pages and matching illustrations …",
         "story_title": "📜 Your personal fairytale book",
         "fallback": "The model {model} was temporarily unavailable. The poem and illustration were generated with a fallback model.",
-        "incomplete_output": "The model did not return the requested poem with 3 AABB stanzas of 4 lines and an illustration for a page. Please try again.",
-        "incomplete_poem_only": "The model did not return five poems with 3 AABB stanzas of 4 lines each. Please try again.",
+        "incomplete_output": "The model did not return a 12-line poem in 3 stanzas of 4 lines and an illustration for a page. Please try again.",
+        "incomplete_poem_only": "The model did not return five 12-line poems in 3 stanzas of 4 lines each. Please try again.",
         "quota_error": "The Gemini image-generation quota for this project has been exhausted (the API reports a free-tier limit of 0). Check the project limits and billing. A fallback model can also fail if its quota is exhausted.\n\nNote: The API says you can try again in {retry_delay}.",
         "retry_later": "a while",
         "missing_key": "No API key found in `.streamlit/secrets.toml`!",
@@ -159,8 +152,8 @@ TEXT = {
         "spinner": "Création de cinq pages de poèmes et d’illustrations assorties …",
         "story_title": "📜 Votre livre de conte personnalisé",
         "fallback": "Le modèle {model} était temporairement indisponible. Le poème et l’illustration ont été créés avec un modèle de secours.",
-        "incomplete_output": "Le modèle n’a pas fourni le poème demandé de 3 strophes AABB de 4 vers et une illustration pour une page. Veuillez réessayer.",
-        "incomplete_poem_only": "Le modèle n’a pas fourni cinq poèmes de 3 strophes AABB de 4 vers chacun. Veuillez réessayer.",
+        "incomplete_output": "Le modèle n’a pas fourni un poème de 12 vers en 3 strophes de 4 vers et une illustration pour une page. Veuillez réessayer.",
+        "incomplete_poem_only": "Le modèle n’a pas fourni cinq poèmes de 12 vers en 3 strophes de 4 vers chacun. Veuillez réessayer.",
         "quota_error": "Le quota de génération d’images Gemini de ce projet est épuisé (l’API indique une limite gratuite de 0). Vérifiez les limites du projet et la facturation. Un modèle de secours peut aussi échouer si son quota est épuisé.\n\nRemarque : l’API indique que vous pouvez réessayer dans {retry_delay}.",
         "retry_later": "quelque temps",
         "missing_key": "Aucune clé API trouvée dans `.streamlit/secrets.toml` !",
@@ -199,8 +192,8 @@ TEXT = {
         "spinner": "Creando cinco páginas de poemas e ilustraciones a juego …",
         "story_title": "📜 Tu cuento personalizado",
         "fallback": "El modelo {model} no estaba disponible temporalmente. El poema y la ilustración se crearon con un modelo alternativo.",
-        "incomplete_output": "El modelo no devolvió el poema solicitado de 3 estrofas AABB de 4 versos y una ilustración para una página. Inténtalo de nuevo.",
-        "incomplete_poem_only": "El modelo no devolvió cinco poemas de 3 estrofas AABB de 4 versos cada uno. Inténtalo de nuevo.",
+        "incomplete_output": "El modelo no devolvió un poema de 12 versos en 3 estrofas de 4 versos y una ilustración para una página. Inténtalo de nuevo.",
+        "incomplete_poem_only": "El modelo no devolvió cinco poemas de 12 versos en 3 estrofas de 4 versos cada uno. Inténtalo de nuevo.",
         "quota_error": "Se ha agotado la cuota de generación de imágenes de Gemini para este proyecto (la API indica un límite gratuito de 0). Comprueba los límites del proyecto y la facturación. Un modelo alternativo también puede fallar si ha agotado su cuota.\n\nAviso: la API indica que puedes volver a intentarlo en {retry_delay}.",
         "retry_later": "un tiempo",
         "missing_key": "No se encontró la clave de API en `.streamlit/secrets.toml`.",
@@ -239,8 +232,8 @@ TEXT = {
         "spinner": "Creazione di cinque pagine di poesie e illustrazioni abbinate …",
         "story_title": "📜 La tua fiaba personalizzata",
         "fallback": "Il modello {model} non era temporaneamente disponibile. La poesia e l’illustrazione sono state create con un modello alternativo.",
-        "incomplete_output": "Il modello non ha restituito la poesia richiesta di 3 strofe AABB da 4 versi e un’illustrazione per una pagina. Riprova.",
-        "incomplete_poem_only": "Il modello non ha restituito cinque poesie di 3 strofe AABB da 4 versi ciascuna. Riprova.",
+        "incomplete_output": "Il modello non ha restituito una poesia di 12 versi in 3 strofe da 4 versi e un’illustrazione per una pagina. Riprova.",
+        "incomplete_poem_only": "Il modello non ha restituito cinque poesie di 12 versi in 3 strofe da 4 versi ciascuna. Riprova.",
         "quota_error": "La quota di generazione immagini Gemini per questo progetto è esaurita (l’API indica un limite gratuito pari a 0). Controlla i limiti del progetto e la fatturazione. Anche un modello alternativo può non funzionare se la sua quota è esaurita.\n\nNota: l’API indica che puoi riprovare tra {retry_delay}.",
         "retry_later": "un po’ di tempo",
         "missing_key": "Chiave API non trovata in `.streamlit/secrets.toml`.",
