@@ -2,7 +2,6 @@ import base64
 from difflib import SequenceMatcher
 import json
 import re
-import unicodedata
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -29,13 +28,6 @@ OUTPUT_LANGUAGE_CODES = {
     "français": "fr",
     "español": "es",
     "italiano": "it",
-}
-RHYME_EXAMPLES = {
-    "de": ("Nacht/Wacht", "Licht/Gesicht", "Hand/Land", "Herz/Schmerz", "Traum/kaum", "Tor/davor"),
-    "en": ("night/light", "stream/dream", "glow/know", "heart/start", "day/way", "near/year"),
-    "fr": ("nuit/bruit", "amour/toujours", "lumière/rivière", "cœur/bonheur", "saison/maison", "espoir/soir"),
-    "es": ("amor/calor", "canción/corazón", "vida/herida", "cielo/suelo", "estrella/bella", "camino/destino"),
-    "it": ("amore/cuore", "sole/parole", "sereno/terreno", "canzone/emozione", "destino/vicino", "sera/vera"),
 }
 CLOUDFLARE_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
 CLOUDFLARE_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
@@ -298,115 +290,6 @@ def is_valid_poem(poem: str) -> bool:
     return len(stanzas) == 3 and all(len(stanza) == 4 for stanza in stanzas)
 
 
-def poem_rhyme_key(line: str, language_code: str) -> str:
-    """Approximate a line's rhyme ending for the supported European languages."""
-    words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", line.casefold())
-    if not words:
-        return ""
-    word = "".join(
-        char
-        for char in unicodedata.normalize("NFKD", words[-1])
-        if not unicodedata.combining(char)
-    )
-    word = re.sub(r"[^a-z]", "", word)
-    if language_code == "fr":
-        while len(word) > 2 and word.endswith(("s", "x")):
-            word = word[:-1]
-        if word.endswith(("ant", "ent", "ans", "and", "emps")):
-            return "an"
-    if language_code == "en" and word.endswith("ue"):
-        return "ue"
-    if language_code == "en" and len(word) > 3 and word.endswith("e"):
-        word = word[:-1]
-    if language_code == "it" and word.endswith("ia"):
-        return "ia"
-    if language_code == "en" and len(word) > 1 and word.endswith("y") and word[-2] in "aeiou":
-        return word[-2:]
-    if word.endswith(("a", "e", "i", "o", "u")):
-        if language_code == "fr":
-            return word[-1]
-        if language_code == "it":
-            return word[-3:]
-        if language_code == "es":
-            return word[-2:]
-    if language_code == "en" and word.endswith("y"):
-        return "y"
-    vowel_positions = [index for index, char in enumerate(word) if char in "aeiou"]
-    if not vowel_positions:
-        return ""
-    last_vowel = vowel_positions[-1]
-    start = last_vowel
-    minimum_length = 3 if language_code == "it" else 2
-    while start > 0 and len(word) - start < minimum_length:
-        start -= 1
-    return word[start:]
-
-
-def poem_language_code(output_language: str) -> str:
-    return OUTPUT_LANGUAGE_CODES.get(output_language.casefold(), "en")
-
-
-def rhyme_examples_for_language(output_language: str) -> str:
-    """Return language-specific rhyme examples for generation prompts."""
-    examples = RHYME_EXAMPLES.get(
-        poem_language_code(output_language),
-        RHYME_EXAMPLES["en"],
-    )
-    return "; ".join(examples)
-
-
-def aabb_rhyme_issues(poem: str, language_code: str) -> list[str]:
-    """Describe adjacent line pairs that the spelling-based rhyme check rejects."""
-    if not is_valid_poem(poem):
-        return ["the poem does not have three four-line stanzas"]
-    issues = []
-    for stanza_number, stanza in enumerate(parse_poem_stanzas(poem), start=1):
-        for pair_number, (first, second) in enumerate(
-            ((stanza[0], stanza[1]), (stanza[2], stanza[3]))
-        ):
-            first_key = poem_rhyme_key(first, language_code)
-            second_key = poem_rhyme_key(second, language_code)
-            first_words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", first.casefold())
-            second_words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", second.casefold())
-            first_line_number = (stanza_number - 1) * 4 + pair_number * 2 + 1
-            second_line_number = first_line_number + 1
-            if not first_words or not second_words:
-                issues.append(
-                    f"stanza {stanza_number} has a line without a final word"
-                )
-            elif first_words[-1] == second_words[-1]:
-                issues.append(
-                    f"lines {first_line_number}/{second_line_number} repeat "
-                    f"the end word '{first_words[-1]}'"
-                )
-            elif not first_key or first_key != second_key:
-                issues.append(
-                    f"lines {first_line_number}/{second_line_number} end with "
-                    f"'{first_words[-1]}'/'{second_words[-1]}' "
-                    f"(checked endings '{first_key}'/'{second_key}')"
-                )
-    return issues
-
-
-def has_aabb_rhyme(poem: str, language_code: str) -> bool:
-    """Check that each quatrain's two adjacent line pairs share rhyme endings."""
-    return not aabb_rhyme_issues(poem, language_code)
-
-
-def exact_rhyme_repair_instruction(output_language: str) -> str:
-    """Map the verified example pairs to all six adjacent line pairs."""
-    pairs = RHYME_EXAMPLES[poem_language_code(output_language)]
-    assignments = "; ".join(
-        f"line {index * 2 + 1} ends with {pair.split('/')[0]} and "
-        f"line {index * 2 + 2} ends with {pair.split('/')[1]}"
-        for index, pair in enumerate(pairs)
-    )
-    return (
-        "For the next draft, use these exact end words, in this order, without "
-        f"changing their spelling: {assignments}."
-    )
-
-
 def is_distinct_poem(poem: str, previous_poems: list[str]) -> bool:
     """Reject an exact or near-duplicate poem within the same generated book."""
     canonical = re.sub(r"\W+", " ", poem.casefold()).strip()
@@ -505,12 +388,10 @@ def build_page_prompt(
     Story direction for this page: {page_story_context(page_number)}
     {previous_context}
 
-    Safe end-rhyme examples in {output_language}: {rhyme_examples_for_language(output_language)}.
-    Use different end words for every line and prefer these pairs when they fit the story.
-    Other pairs are acceptable only when their final spoken sounds clearly rhyme.
-    Return a unique romantic poem in {output_language} consisting of exactly 3 stanzas,
-    exactly 4 lines per stanza, and exactly 12 lines total. Use clear AABB end rhymes in
-    every stanza: the final words of lines 1 and 2 must rhyme, as must lines 3 and 4.
+    Return a unique romantic poem in {output_language} with exactly 12 lines,
+    grouped into exactly 3 stanzas of 4 lines each. Use the AABB rhyme scheme in
+    every stanza: lines 1 and 2 rhyme (A), and lines 3 and 4 rhyme (B).
+    Separate stanzas with one blank line.
     Choose simple, unmistakable rhyme pairs. Separate stanzas with one blank line.
     Make this page's poem substantially different from every previous poem. Do not reuse
     any previous line, image, event, or distinctive phrase. Follow this page's story direction
@@ -607,7 +488,9 @@ def cloudflare_generate_poem_and_image_prompt(
 
     {f"IMPORTANT CORRECTION FOR THIS RETRY: {revision_feedback}" if revision_feedback else ""}
 
-    Write a unique romantic poem in {output_language}: exactly 12 numbered lines.
+    Write a unique romantic poem in {output_language}: exactly 12 numbered lines,
+    grouped into exactly 3 stanzas of 4 lines each. Every stanza must follow the
+    AABB rhyme scheme: lines 1 and 2 rhyme (A), and lines 3 and 4 rhyme (B).
     In the POEM section, put exactly one complete verse on each physical line,
     numbered 1. through 12. Do not wrap a verse onto another line or add prose.
     Put one blank line only after lines 4 and 8. Follow this exact format:
@@ -625,13 +508,6 @@ def cloudflare_generate_poem_and_image_prompt(
     10. [tenth verse]
     11. [eleventh verse]
     12. [twelfth verse]
-    Safe end-rhyme examples in {output_language}: {rhyme_examples_for_language(output_language)}.
-    Prefer these pairs when they fit the story; other pairs are acceptable only when
-    their final spoken sounds clearly rhyme. Never repeat an end word.
-    Every stanza must have strong, unmistakable AABB end rhymes. The final sounds of
-    lines 1 and 2 must rhyme, as must lines 3 and 4. Before answering, check each of
-    the six line pairs yourself and rewrite any pair that does not rhyme naturally.
-    Do not use the same end word twice as a substitute for a rhyme.
     Make the poem and scene substantially different from every previous page. Do not reuse
     any previous line, event, or distinctive phrase, and advance this page's story direction.
 
@@ -730,7 +606,6 @@ def generate_distinct_cloudflare_poem(
 ) -> tuple[str, str]:
     """Retry Cloudflare text generation until the poem is valid and distinct."""
     revision_feedback = None
-    language_code = poem_language_code(output_language)
     last_failure = "unknown validation failure"
     for _ in range(MAX_CLOUDFLARE_POEM_ATTEMPTS):
         poem, image_prompt = cloudflare_generate_poem_and_image_prompt(
@@ -752,12 +627,6 @@ def generate_distinct_cloudflare_poem(
                 "complete verse on each physical line and blank lines only after "
                 "lines 4 and 8"
             )
-        elif not has_aabb_rhyme(poem, language_code):
-            last_failure = (
-                "the app's spelling-based rhyme check rejected: "
-                f"{'; '.join(aabb_rhyme_issues(poem, language_code))}. "
-                f"{exact_rhyme_repair_instruction(output_language)}"
-            )
         elif not is_distinct_poem(poem, previous_poems):
             last_failure = (
                 "the poem is too similar to an earlier page; use new wording and "
@@ -770,7 +639,8 @@ def generate_distinct_cloudflare_poem(
             "that draft. Correct the issue and check all 12 lines before returning."
         )
     raise IncompleteGeneratedPageError(
-        f"Cloudflare did not return a distinct, valid AABB poem after "
+        f"Cloudflare did not return a distinct poem with 12 lines in three "
+        f"four-line stanzas after "
         f"{MAX_CLOUDFLARE_POEM_ATTEMPTS} attempts for page {page_number}."
         f" Last validation issue: {last_failure}."
     )
@@ -815,11 +685,10 @@ def generate_gemini_page(
     poem = "".join(part.text or "" for part in response_parts).strip()
     if (
         not is_valid_poem(poem)
-        or not has_aabb_rhyme(poem, poem_language_code(output_language))
         or not is_distinct_poem(poem, previous_poems)
     ):
         raise IncompleteGeneratedPageError(
-            f"Gemini did not return a distinct 12-line poem with three AABB-rhyming "
+            f"Gemini did not return a distinct 12-line poem in three four-line "
             f"stanzas for page {page_number}."
         )
 
