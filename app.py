@@ -30,6 +30,13 @@ OUTPUT_LANGUAGE_CODES = {
     "español": "es",
     "italiano": "it",
 }
+RHYME_EXAMPLES = {
+    "de": ("Nacht/Wacht", "Licht/Gesicht", "Hand/Land", "Herz/Schmerz", "Traum/kaum", "Tor/davor"),
+    "en": ("night/light", "stream/dream", "glow/know", "heart/start", "day/way", "near/year"),
+    "fr": ("nuit/bruit", "amour/toujours", "lumière/rivière", "cœur/bonheur", "saison/maison", "espoir/soir"),
+    "es": ("amor/calor", "canción/corazón", "vida/herida", "cielo/suelo", "estrella/bella", "camino/destino"),
+    "it": ("amore/cuore", "sole/parole", "sereno/terreno", "canzone/emozione", "destino/vicino", "sera/vera"),
+}
 CLOUDFLARE_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
 CLOUDFLARE_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
 CLOUDFLARE_VISION_DOC_URL = (
@@ -339,17 +346,65 @@ def poem_language_code(output_language: str) -> str:
     return OUTPUT_LANGUAGE_CODES.get(output_language.casefold(), "en")
 
 
-def has_aabb_rhyme(poem: str, language_code: str) -> bool:
-    """Check that each quatrain's two adjacent line pairs share rhyme endings."""
+def rhyme_examples_for_language(output_language: str) -> str:
+    """Return language-specific rhyme examples for generation prompts."""
+    examples = RHYME_EXAMPLES.get(
+        poem_language_code(output_language),
+        RHYME_EXAMPLES["en"],
+    )
+    return "; ".join(examples)
+
+
+def aabb_rhyme_issues(poem: str, language_code: str) -> list[str]:
+    """Describe adjacent line pairs that the spelling-based rhyme check rejects."""
     if not is_valid_poem(poem):
-        return False
-    for stanza in parse_poem_stanzas(poem):
-        for first, second in ((stanza[0], stanza[1]), (stanza[2], stanza[3])):
+        return ["the poem does not have three four-line stanzas"]
+    issues = []
+    for stanza_number, stanza in enumerate(parse_poem_stanzas(poem), start=1):
+        for pair_number, (first, second) in enumerate(
+            ((stanza[0], stanza[1]), (stanza[2], stanza[3]))
+        ):
             first_key = poem_rhyme_key(first, language_code)
             second_key = poem_rhyme_key(second, language_code)
-            if not first_key or first_key != second_key:
-                return False
-    return True
+            first_words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", first.casefold())
+            second_words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", second.casefold())
+            first_line_number = (stanza_number - 1) * 4 + pair_number * 2 + 1
+            second_line_number = first_line_number + 1
+            if not first_words or not second_words:
+                issues.append(
+                    f"stanza {stanza_number} has a line without a final word"
+                )
+            elif first_words[-1] == second_words[-1]:
+                issues.append(
+                    f"lines {first_line_number}/{second_line_number} repeat "
+                    f"the end word '{first_words[-1]}'"
+                )
+            elif not first_key or first_key != second_key:
+                issues.append(
+                    f"lines {first_line_number}/{second_line_number} end with "
+                    f"'{first_words[-1]}'/'{second_words[-1]}' "
+                    f"(checked endings '{first_key}'/'{second_key}')"
+                )
+    return issues
+
+
+def has_aabb_rhyme(poem: str, language_code: str) -> bool:
+    """Check that each quatrain's two adjacent line pairs share rhyme endings."""
+    return not aabb_rhyme_issues(poem, language_code)
+
+
+def exact_rhyme_repair_instruction(output_language: str) -> str:
+    """Map the verified example pairs to all six adjacent line pairs."""
+    pairs = RHYME_EXAMPLES[poem_language_code(output_language)]
+    assignments = "; ".join(
+        f"line {index * 2 + 1} ends with {pair.split('/')[0]} and "
+        f"line {index * 2 + 2} ends with {pair.split('/')[1]}"
+        for index, pair in enumerate(pairs)
+    )
+    return (
+        "For the next draft, use these exact end words, in this order, without "
+        f"changing their spelling: {assignments}."
+    )
 
 
 def is_distinct_poem(poem: str, previous_poems: list[str]) -> bool:
@@ -377,25 +432,45 @@ def derive_poem_title(poem: str) -> str:
     return stanzas[0][0].strip().rstrip(" .!?…")
 
 
-def normalize_cloudflare_poem(poem: str) -> str:
-    """Normalize common list and stanza formatting while enforcing 12 poem lines."""
+def extract_cloudflare_poem_lines(poem: str) -> list[str]:
+    """Extract poem lines and join wrapped continuations of numbered lines."""
     poem = re.sub(r"```(?:\w+)?\s*|\s*```", "", poem).strip()
     lines = []
-    for line in poem.splitlines():
-        line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line).strip()
-        if not line or re.fullmatch(r"(?:\*\*)?stanza\s+\d+(?:\*\*)?:?", line, re.I):
-            lines.append("")
+    numbered_line_pattern = re.compile(
+        r"^\s*(?:[-*•]\s*)?(?:\(?\d{1,2}[.)]\)?|\d{1,2}:)\s*(.*)$"
+    )
+    has_numbered_lines = any(
+        numbered_line_pattern.match(line) for line in poem.splitlines()
+    )
+    stanza_label_pattern = re.compile(
+        r"(?:\*\*)?stanza\s+\d+(?:\*\*)?:?", re.IGNORECASE
+    )
+    for raw_line in poem.splitlines():
+        line = re.sub(r"^\s{0,3}#{1,6}\s*", "", raw_line).strip()
+        if not line or stanza_label_pattern.fullmatch(line):
             continue
-        line = re.sub(r"^\s*(?:[-*•]\s+|\d{1,2}[.)]\s+)", "", line)
-        line = line.strip().strip("*").strip()
-        if line:
-            lines.append(line)
+        numbered_match = numbered_line_pattern.match(line)
+        if numbered_match:
+            lines.append(numbered_match.group(1).strip().strip("*").strip())
+        elif has_numbered_lines:
+            if lines:
+                lines[-1] = f"{lines[-1]} {line}".strip()
+        else:
+            line = re.sub(r"^\s*(?:[-*•]\s+)", "", line)
+            line = line.strip().strip("*").strip()
+            if line:
+                lines.append(line)
 
-    nonempty_lines = [line for line in lines if line]
-    if len(nonempty_lines) != 12:
+    return lines
+
+
+def normalize_cloudflare_poem(poem: str) -> str:
+    """Normalize common list and stanza formatting while enforcing 12 poem lines."""
+    poem_lines = extract_cloudflare_poem_lines(poem)
+    if len(poem_lines) != 12:
         return ""
     return "\n\n".join(
-        "\n".join(nonempty_lines[index : index + 4])
+        "\n".join(poem_lines[index : index + 4])
         for index in range(0, 12, 4)
     )
 
@@ -430,6 +505,9 @@ def build_page_prompt(
     Story direction for this page: {page_story_context(page_number)}
     {previous_context}
 
+    Safe end-rhyme examples in {output_language}: {rhyme_examples_for_language(output_language)}.
+    Use different end words for every line and prefer these pairs when they fit the story.
+    Other pairs are acceptable only when their final spoken sounds clearly rhyme.
     Return a unique romantic poem in {output_language} consisting of exactly 3 stanzas,
     exactly 4 lines per stanza, and exactly 12 lines total. Use clear AABB end rhymes in
     every stanza: the final words of lines 1 and 2 must rhyme, as must lines 3 and 4.
@@ -514,6 +592,7 @@ def cloudflare_generate_poem_and_image_prompt(
     output_language: str,
     page_number: int,
     previous_poems: list[str],
+    revision_feedback: str | None = None,
 ) -> tuple[str, str]:
     """Use Cloudflare vision to write one story page and describe its image."""
     previous_context = "\n\n".join(previous_poems)
@@ -526,10 +605,33 @@ def cloudflare_generate_poem_and_image_prompt(
     Continue consistently from these previous page poems:
     {previous_context or "[This is the opening page.]"}
 
+    {f"IMPORTANT CORRECTION FOR THIS RETRY: {revision_feedback}" if revision_feedback else ""}
+
     Write a unique romantic poem in {output_language}: exactly 12 numbered lines.
-    Each stanza has exactly 4 lines and the stanza breaks go after lines 4 and 8.
-    Every stanza must have clear AABB end rhymes. Make the last words of lines 1 and 2
-    rhyme, and the last words of lines 3 and 4 rhyme; choose simple, unmistakable pairs.
+    In the POEM section, put exactly one complete verse on each physical line,
+    numbered 1. through 12. Do not wrap a verse onto another line or add prose.
+    Put one blank line only after lines 4 and 8. Follow this exact format:
+    1. [first verse]
+    2. [second verse]
+    3. [third verse]
+    4. [fourth verse]
+
+    5. [fifth verse]
+    6. [sixth verse]
+    7. [seventh verse]
+    8. [eighth verse]
+
+    9. [ninth verse]
+    10. [tenth verse]
+    11. [eleventh verse]
+    12. [twelfth verse]
+    Safe end-rhyme examples in {output_language}: {rhyme_examples_for_language(output_language)}.
+    Prefer these pairs when they fit the story; other pairs are acceptable only when
+    their final spoken sounds clearly rhyme. Never repeat an end word.
+    Every stanza must have strong, unmistakable AABB end rhymes. The final sounds of
+    lines 1 and 2 must rhyme, as must lines 3 and 4. Before answering, check each of
+    the six line pairs yourself and rewrite any pair that does not rhyme naturally.
+    Do not use the same end word twice as a substitute for a rhyme.
     Make the poem and scene substantially different from every previous page. Do not reuse
     any previous line, event, or distinctive phrase, and advance this page's story direction.
 
@@ -597,7 +699,8 @@ def cloudflare_generate_poem_and_image_prompt(
         sections[label] = content
 
     poem = sections.get("POEM", response_text).strip()
-    poem = normalize_cloudflare_poem(poem)
+    poem_lines = extract_cloudflare_poem_lines(poem)
+    poem = normalize_cloudflare_poem(poem) or "\n".join(poem_lines)
     image_prompt = next(
         (
             section
@@ -626,7 +729,9 @@ def generate_distinct_cloudflare_poem(
     previous_poems: list[str],
 ) -> tuple[str, str]:
     """Retry Cloudflare text generation until the poem is valid and distinct."""
-    previous_context = list(previous_poems)
+    revision_feedback = None
+    language_code = poem_language_code(output_language)
+    last_failure = "unknown validation failure"
     for _ in range(MAX_CLOUDFLARE_POEM_ATTEMPTS):
         poem, image_prompt = cloudflare_generate_poem_and_image_prompt(
             img1,
@@ -634,18 +739,40 @@ def generate_distinct_cloudflare_poem(
             style,
             output_language,
             page_number,
-            previous_context,
+            previous_poems,
+            revision_feedback,
         )
-        if (
-            is_valid_poem(poem)
-            and has_aabb_rhyme(poem, poem_language_code(output_language))
-            and is_distinct_poem(poem, previous_poems)
-        ):
+        if not is_valid_poem(poem):
+            candidate_line_count = sum(
+                len(stanza) for stanza in parse_poem_stanzas(poem)
+            )
+            last_failure = (
+                f"the poem parser found {candidate_line_count} candidate verse lines; "
+                "it must find exactly 12, numbered 1. through 12., with one "
+                "complete verse on each physical line and blank lines only after "
+                "lines 4 and 8"
+            )
+        elif not has_aabb_rhyme(poem, language_code):
+            last_failure = (
+                "the app's spelling-based rhyme check rejected: "
+                f"{'; '.join(aabb_rhyme_issues(poem, language_code))}. "
+                f"{exact_rhyme_repair_instruction(output_language)}"
+            )
+        elif not is_distinct_poem(poem, previous_poems):
+            last_failure = (
+                "the poem is too similar to an earlier page; use new wording and "
+                "a different event from this page's story direction"
+            )
+        else:
             return poem, image_prompt
-        previous_context.append(poem)
+        revision_feedback = (
+            f"The previous draft was rejected because {last_failure}. Do not repeat "
+            "that draft. Correct the issue and check all 12 lines before returning."
+        )
     raise IncompleteGeneratedPageError(
         f"Cloudflare did not return a distinct, valid AABB poem after "
         f"{MAX_CLOUDFLARE_POEM_ATTEMPTS} attempts for page {page_number}."
+        f" Last validation issue: {last_failure}."
     )
 
 
