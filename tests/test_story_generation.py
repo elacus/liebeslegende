@@ -1,8 +1,13 @@
 import unittest
+from unittest.mock import Mock
 
+from google.genai import errors
 from story_generation import (
+    GeminiModelFallbackError,
+    TEXT_MODELS,
     build_page_prompt,
     derive_poem_title,
+    generate_content_with_fallback,
     is_distinct_poem,
     is_valid_poem,
     page_story_context,
@@ -10,6 +15,70 @@ from story_generation import (
     repeated_poem_line_count,
 )
 from translations import detect_language
+
+
+class ModelFallbackTests(unittest.TestCase):
+    def test_text_models_use_current_fallback_order(self) -> None:
+        self.assertEqual(
+            TEXT_MODELS,
+            (
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+            ),
+        )
+
+    def test_503_automatically_tries_next_model(self) -> None:
+        client = Mock()
+        response = object()
+        client.models.generate_content.side_effect = [
+            errors.APIError(
+                503,
+                {"error": {"code": 503, "message": "High demand"}},
+            ),
+            response,
+        ]
+
+        result = generate_content_with_fallback(
+            client,
+            ("text-model-one", "text-model-two"),
+            ["prompt"],
+            ["TEXT"],
+        )
+
+        self.assertIs(result, response)
+        self.assertEqual(
+            [
+                call.kwargs["model"]
+                for call in client.models.generate_content.call_args_list
+            ],
+            ["text-model-one", "text-model-two"],
+        )
+
+    def test_exhausted_fallback_reports_each_model(self) -> None:
+        client = Mock()
+        client.models.generate_content.side_effect = [
+            errors.APIError(
+                503,
+                {"error": {"code": 503, "message": "High demand"}},
+            ),
+            errors.APIError(
+                503,
+                {"error": {"code": 503, "message": "Still unavailable"}},
+            ),
+        ]
+
+        with self.assertRaises(GeminiModelFallbackError) as context:
+            generate_content_with_fallback(
+                client,
+                ("text-model-one", "text-model-two"),
+                ["prompt"],
+                ["TEXT"],
+            )
+
+        self.assertIn("text-model-one returned 503", str(context.exception))
+        self.assertIn("text-model-two returned 503", str(context.exception))
+        self.assertEqual(context.exception.code, 503)
 
 
 class PoemTests(unittest.TestCase):

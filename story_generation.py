@@ -1,5 +1,6 @@
 from difflib import SequenceMatcher
 from io import BytesIO
+import logging
 import re
 
 from google import genai
@@ -7,15 +8,41 @@ from google.genai import errors, types
 from PIL import Image
 
 CAMEO_PAGE_COUNT = 5
-GEMINI_MODELS = (
+TEXT_MODELS = (
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+)
+IMAGE_MODELS = (
     "gemini-3.1-flash-image",
     "gemini-2.5-flash-image",
 )
 GEMINI_FALLBACK_ERROR_CODES = {404, 408, 429, 500, 502, 503, 504}
+logger = logging.getLogger(__name__)
 
 
 class IncompleteGeneratedPageError(RuntimeError):
     pass
+
+
+class GeminiModelFallbackError(errors.APIError):
+    """Report all model attempts while preserving the final API error details."""
+
+    def __init__(
+        self,
+        failures: list[str],
+        last_error: errors.APIError,
+    ) -> None:
+        self.failures = tuple(failures)
+        super().__init__(
+            last_error.code,
+            last_error.details,
+            last_error.response,
+        )
+
+    def __str__(self) -> str:
+        attempts = "; ".join(self.failures)
+        return f"Gemini model requests failed. Attempts: {attempts}"
 
 
 def parse_poem_stanzas(poem: str) -> list[list[str]]:
@@ -140,13 +167,107 @@ def build_page_prompt(
     any previous line, image, event, or distinctive phrase. Follow this page's story direction
     with its own concrete scene and advance the overall story.
     Return only the poem, with no title, numbering, headings, explanations, or other text.
-
-    Also generate exactly one finished watercolor children's-book illustration for this page.
-    Base the illustration on the exact poem you just wrote: depict its setting, actions,
-    and emotional tone. Show the same two main characters acting out that poem, rather
-    than creating a separate scene for the page.
-    The output must be an actual image without text, letters, captions, or watermark.
     """
+
+
+def build_illustration_prompt(poem: str) -> str:
+    return (
+        "Create exactly one finished watercolor children's-book illustration for this page. "
+        "Base the illustration on the exact poem provided below: depict its setting, actions, "
+        "and emotional tone. Show the same two main characters acting out that poem, rather "
+        "than creating a separate scene for the page. The output must be an actual image "
+        "without text, letters, captions, or watermark.\n\n"
+        f"{poem}"
+    )
+
+
+def generate_content_with_fallback(
+    client: genai.Client,
+    model_names: tuple[str, ...],
+    contents: list[object],
+    response_modalities: list[str],
+) -> object:
+    failures: list[str] = []
+    for model_index, model in enumerate(model_names):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=response_modalities,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
+                ),
+            )
+        except errors.APIError as e:
+            failures.append(f"{model} returned {e.code}: {e}")
+            if e.code not in GEMINI_FALLBACK_ERROR_CODES:
+                raise GeminiModelFallbackError(failures, e) from e
+            if model_index == len(model_names) - 1:
+                raise GeminiModelFallbackError(failures, e) from e
+            logger.warning(
+                "Gemini model %s returned API error %s; trying the next model.",
+                model,
+                e.code,
+            )
+    raise RuntimeError("No Gemini model response was produced.")
+
+
+def generate_poem(
+    client: genai.Client,
+    img1: Image.Image,
+    img2: Image.Image,
+    style: str,
+    output_language: str,
+    page_number: int,
+    previous_poems: list[str],
+) -> str:
+    prompt = build_page_prompt(
+        page_number,
+        output_language,
+        style,
+        previous_poems,
+    )
+    response = generate_content_with_fallback(
+        client,
+        TEXT_MODELS,
+        [img1, img2, prompt],
+        ["TEXT"],
+    )
+    poem = "".join(part.text or "" for part in (response.parts or [])).strip()
+    if not is_valid_poem(poem) or not is_distinct_poem(poem, previous_poems):
+        raise IncompleteGeneratedPageError(
+            f"Gemini did not return a distinct 12-line poem in three four-line "
+            f"stanzas for page {page_number}."
+        )
+    return poem
+
+
+def generate_illustration(
+    client: genai.Client,
+    img1: Image.Image,
+    img2: Image.Image,
+    poem: str,
+) -> bytes:
+    prompt = build_illustration_prompt(poem)
+    response = generate_content_with_fallback(
+        client,
+        IMAGE_MODELS,
+        [img1, img2, prompt],
+        ["IMAGE"],
+    )
+    for part in response.parts or []:
+        if (
+            part.inline_data
+            and part.inline_data.data
+            and (part.inline_data.mime_type or "").startswith("image/")
+        ):
+            with Image.open(BytesIO(part.inline_data.data)) as image:
+                image_buffer = BytesIO()
+                image.convert("RGB").save(image_buffer, format="PNG")
+            return image_buffer.getvalue()
+    raise IncompleteGeneratedPageError("Gemini did not return an illustration.")
 
 
 def generate_gemini_page(
@@ -158,56 +279,17 @@ def generate_gemini_page(
     page_number: int,
     previous_poems: list[str],
 ) -> tuple[str, bytes]:
-    prompt = build_page_prompt(
-        page_number,
-        output_language,
+    poem = generate_poem(
+        client,
+        img1,
+        img2,
         style,
+        output_language,
+        page_number,
         previous_poems,
     )
-    for model_index, model in enumerate(GEMINI_MODELS):
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[img1, img2, prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=["TEXT", "IMAGE"],
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    ),
-                ),
-            )
-            break
-        except errors.APIError as e:
-            if (
-                e.code not in GEMINI_FALLBACK_ERROR_CODES
-                or model_index == len(GEMINI_MODELS) - 1
-            ):
-                raise
-
-    response_parts = response.parts or []
-    poem = "".join(part.text or "" for part in response_parts).strip()
-    if (
-        not is_valid_poem(poem)
-        or not is_distinct_poem(poem, previous_poems)
-    ):
-        raise IncompleteGeneratedPageError(
-            f"Gemini did not return a distinct 12-line poem in three four-line "
-            f"stanzas for page {page_number}."
-        )
-
-    for part in response_parts:
-        if (
-            part.inline_data
-            and part.inline_data.data
-            and (part.inline_data.mime_type or "").startswith("image/")
-        ):
-            with Image.open(BytesIO(part.inline_data.data)) as image:
-                image_buffer = BytesIO()
-                image.convert("RGB").save(image_buffer, format="PNG")
-            return poem, image_buffer.getvalue()
-    raise IncompleteGeneratedPageError(
-        f"Gemini did not return an illustration for page {page_number}."
-    )
+    image_data = generate_illustration(client, img1, img2, poem)
+    return poem, image_data
 
 
 def format_retry_delay(error: errors.APIError) -> str | None:

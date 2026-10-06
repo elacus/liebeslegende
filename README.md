@@ -25,7 +25,7 @@ A multilingual Streamlit app that creates a five-page fairytale love-poem book f
 
 The local secrets file is intentionally excluded from Git. Never commit API keys or tokens. For Streamlit Community Cloud, add the same settings in the app's **Settings → Secrets** page.
 
-Gemini is used for text and image generation. The app tries its configured Gemini image models in order if a model is unavailable. Generation requires a valid Gemini API key and is subject to Gemini model availability and quotas.
+Gemini is used for text and image generation. The app tries its configured Gemini image models in order if a model is unavailable. Text generation requires a valid Gemini API key and is subject to Gemini model availability and quotas. If illustration generation fails, the app displays the error and lets you continue with the poem pages without further illustrations. Missing illustrations are indicated by a placeholder in the preview and PDF, which can still be downloaded.
 
 ## Project structure
 

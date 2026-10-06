@@ -11,7 +11,8 @@ from story_generation import (
     IncompleteGeneratedPageError,
     derive_poem_title,
     format_retry_delay,
-    generate_gemini_page,
+    generate_illustration,
+    generate_poem,
     is_distinct_poem,
 )
 from translations import LANGUAGES, TEXT, detect_language
@@ -84,7 +85,12 @@ if st.button(text["generate"], type="primary", width="stretch"):
     if not foto_person_1 or not foto_person_2:
         st.warning(text["upload_warning"])
     else:
-        for key in ("generated_pages", "generated_language_code"):
+        for key in (
+            "generated_pages",
+            "generated_language_code",
+            "pending_image_generation",
+            "image_generation_error",
+        ):
             st.session_state.pop(key, None)
 
         with st.spinner(text["spinner"]):
@@ -105,7 +111,7 @@ if st.button(text["generate"], type="primary", width="stretch"):
                         raise RuntimeError(
                             "Gemini client could not be initialized."
                         ) from gemini_init_error
-                    poem, image_data = generate_gemini_page(
+                    poem = generate_poem(
                         client,
                         img1,
                         img2,
@@ -133,6 +139,33 @@ if st.button(text["generate"], type="primary", width="stretch"):
                     )
                     break
 
+                try:
+                    image_data = generate_illustration(
+                        client,
+                        img1,
+                        img2,
+                        poem,
+                    )
+                except Exception as e:
+                    if isinstance(e, errors.APIError) and e.code == 429:
+                        retry_delay = format_retry_delay(e) or text["retry_later"]
+                        st.error(
+                            text["quota_error"].format(retry_delay=retry_delay)
+                        )
+                    st.session_state.pending_image_generation = {
+                        "pages": generated_pages,
+                        "poem": poem,
+                        "previous_poems": previous_poems + [poem],
+                        "next_page_number": page_number + 1,
+                        "error": str(e),
+                        "style": stil,
+                        "output_language": text["output_language"],
+                        "language_code": language_code,
+                        "image_1": foto_person_1.getvalue(),
+                        "image_2": foto_person_2.getvalue(),
+                    }
+                    break
+
                 generated_pages.append((poem, image_data))
                 previous_poems.append(poem)
 
@@ -141,6 +174,73 @@ if st.button(text["generate"], type="primary", width="stretch"):
             elif len(generated_pages) == CAMEO_PAGE_COUNT:
                 st.session_state.generated_pages = generated_pages
                 st.session_state.generated_language_code = language_code
+
+pending_image_generation = st.session_state.get("pending_image_generation")
+if pending_image_generation is not None:
+    st.error(
+        text["image_generation_error"].format(
+            error=pending_image_generation["error"]
+        )
+    )
+    if st.button(text["continue_without_images"], key="continue_without_images"):
+        st.session_state.pop("pending_image_generation")
+        st.session_state.image_generation_error = pending_image_generation["error"]
+        generated_pages = list(pending_image_generation["pages"])
+        generated_pages.append((pending_image_generation["poem"], None))
+        previous_poems = list(pending_image_generation["previous_poems"])
+        generation_error = None
+
+        with st.spinner(text["continue_spinner"]):
+            try:
+                client = genai.Client(api_key=api_key)
+                with (
+                    Image.open(BytesIO(pending_image_generation["image_1"])) as img1,
+                    Image.open(BytesIO(pending_image_generation["image_2"])) as img2,
+                ):
+                    for page_number in range(
+                        pending_image_generation["next_page_number"],
+                        CAMEO_PAGE_COUNT + 1,
+                    ):
+                        poem = generate_poem(
+                            client,
+                            img1,
+                            img2,
+                            pending_image_generation["style"],
+                            pending_image_generation["output_language"],
+                            page_number,
+                            previous_poems,
+                        )
+                        if not is_distinct_poem(poem, previous_poems):
+                            raise IncompleteGeneratedPageError(
+                                f"Generated poem for page {page_number} repeats earlier content."
+                            )
+                        generated_pages.append((poem, None))
+                        previous_poems.append(poem)
+            except Exception as e:
+                generation_error = e
+                if isinstance(e, errors.APIError) and e.code == 429:
+                    retry_delay = format_retry_delay(e) or text["retry_later"]
+                    st.error(
+                        text["quota_error"].format(retry_delay=retry_delay)
+                    )
+
+        if generation_error is not None:
+            st.error(text["error"].format(error=generation_error))
+        else:
+            st.session_state.generated_pages = generated_pages
+            st.session_state.generated_language_code = (
+                pending_image_generation["language_code"]
+            )
+
+if (
+    pending_image_generation is None
+    and "image_generation_error" in st.session_state
+):
+    st.error(
+        text["image_generation_error"].format(
+            error=st.session_state.image_generation_error
+        )
+    )
 
 if (
     "generated_pages" in st.session_state
@@ -163,10 +263,16 @@ if (
                 width="stretch",
                 alt=generated_text["illustration_caption"],
             )
+        else:
+            st.info(generated_text["image_placeholder"])
         st.markdown(poem)
 
     try:
-        pdf_data = create_poem_pdf(pages, book_title)
+        pdf_data = create_poem_pdf(
+            pages,
+            book_title,
+            generated_text["image_placeholder"],
+        )
     except Exception as e:
         st.error(generated_text["pdf_error"].format(error=e))
     else:

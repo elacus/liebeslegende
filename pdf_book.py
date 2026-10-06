@@ -27,7 +27,9 @@ PDF_FONT_PAIRS = (
 
 
 def create_poem_pdf(
-    pages: list[tuple[str, bytes | None]], cover_title: str
+    pages: list[tuple[str, bytes | None]],
+    cover_title: str,
+    image_placeholder_text: str = "Illustration unavailable",
 ) -> bytes:
     """Create an A4 booklet with a cover and five illustrated poem pages."""
     font_pair = next(
@@ -114,7 +116,27 @@ def create_poem_pdf(
             )
             poem_y = image_y + rendered_height + 10
         else:
-            poem_y = 77
+            placeholder_width = pdf.w - 2 * margin
+            placeholder_height = 105
+            pdf.set_fill_color(242, 237, 229)
+            pdf.set_draw_color(211, 197, 177)
+            pdf.rect(
+                margin,
+                image_y,
+                placeholder_width,
+                placeholder_height,
+                style="DF",
+            )
+            pdf.set_text_color(112, 74, 87)
+            pdf.set_font("Book", style="B", size=13)
+            pdf.set_xy(margin, image_y + placeholder_height / 2 - 6)
+            pdf.cell(
+                placeholder_width,
+                12,
+                image_placeholder_text,
+                align="C",
+            )
+            poem_y = image_y + placeholder_height + 10
 
         pdf.set_text_color(49, 57, 73)
         pdf.set_font("Book", size=12)
