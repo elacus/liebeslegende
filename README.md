@@ -15,8 +15,6 @@ A multilingual Streamlit app that creates a five-page fairytale love-poem book f
 
    ```toml
    GEMINI_API_KEY = "your-gemini-api-key"
-   CLOUDFLARE_ACCOUNT_ID = "your-cloudflare-account-id"
-   CLOUDFLARE_API_TOKEN = "your-cloudflare-api-token"
    ```
 
 4. Start the app:
@@ -27,4 +25,4 @@ A multilingual Streamlit app that creates a five-page fairytale love-poem book f
 
 The local secrets file is intentionally excluded from Git. Never commit API keys or tokens. For Streamlit Community Cloud, add the same settings in the app's **Settings → Secrets** page.
 
-Gemini is used as the primary text-and-image generator. Cloudflare Workers AI is used as a fallback when Gemini is unavailable. Both services need valid credentials and may have separate quotas and model availability.
+Gemini is used for text and image generation. The app tries its configured Gemini image models in order if a model is unavailable. Generation requires a valid Gemini API key and is subject to Gemini model availability and quotas.

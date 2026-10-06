@@ -1,16 +1,11 @@
-import base64
 from difflib import SequenceMatcher
-import json
 import re
 from io import BytesIO
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.parse import quote
-from urllib.request import Request, urlopen
 
 import streamlit as st
 from fpdf import FPDF
-from PIL import Image, ImageOps
+from PIL import Image
 from google import genai
 from google.genai import errors
 from google.genai import types
@@ -21,15 +16,6 @@ GEMINI_MODELS = (
 )
 GEMINI_FALLBACK_ERROR_CODES = {404, 408, 429, 500, 502, 503, 504}
 CAMEO_PAGE_COUNT = 5
-MAX_CLOUDFLARE_POEM_ATTEMPTS = 3
-CLOUDFLARE_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
-CLOUDFLARE_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
-CLOUDFLARE_VISION_DOC_URL = (
-    "https://developers.cloudflare.com/workers-ai/models/llava-1.5-7b-hf/"
-)
-CLOUDFLARE_REST_API_DOC_URL = (
-    "https://developers.cloudflare.com/workers-ai/get-started/rest-api/"
-)
 
 LANGUAGES = {
     "de": "Deutsch",
@@ -50,18 +36,6 @@ TEXT = {
         "styles": ["Aquarell & Zauberwald", "Klassisches Königs-Märchen", "Sternenreise & Sternenlicht", "Rustikale Waldromantik"],
         "illustration_caption": "Generierte Märchen-Illustration",
         "download_poem": "Gedicht herunterladen",
-        "continue_without_image": "Weiter ohne Bildgenerierung",
-        "poem_only_spinner": "Gedicht wird ohne Bildgenerierung erstellt …",
-        "poem_only_error": "Das Gedicht konnte ohne Bildgenerierung nicht erstellt werden: {error}",
-        "cloudflare_fallback": "Gemini ist nicht verfügbar. Cloudflare wird als Fallback versucht.",
-        "cloudflare_image_error": "Cloudflare konnte das Gedicht erstellen, aber kein Bild generieren: {error} Du kannst ohne Bild fortfahren.",
-        "some_illustrations_missing": "Mindestens eine Illustration konnte nicht erstellt werden. Du kannst mit dem Button unten ohne Bilder fortfahren.",
-        "cloudflare_error": "Auch der Cloudflare-Fallback ist fehlgeschlagen: {error}",
-        "cloudflare_auth_error": "Cloudflare hat die Anmeldung abgelehnt. Prüfe die Account-ID und erstelle im Cloudflare-Dashboard unter „Workers AI“ einen Workers-AI-API-Token. Ein manuell erstellter Token benötigt die Berechtigungen „Workers AI – Read“ und „Workers AI – Edit“. Ersetze damit CLOUDFLARE_ACCOUNT_ID und CLOUDFLARE_API_TOKEN in der secrets.toml dieser App.",
-        "cloudflare_auth_docs": "Cloudflare-Anleitung: API-Token für Workers AI erstellen",
-        "cloudflare_license_notice": "Cloudflare verlangt für dieses Vision-Modell die Zustimmung zu einer Lizenz und Nutzungsrichtlinie. Diese Bedingungen enthalten eine Erklärung, dass die nutzende Person nicht in der EU wohnhaft ist beziehungsweise das Unternehmen seinen Hauptsitz nicht in der EU hat. Wenn das auf dich nicht zutrifft, bestätige die Zustimmung nicht. Der Fallback wurde auf ein anderes Cloudflare-Vision-Modell umgestellt.",
-        "cloudflare_vision_docs": "Informationen zum alternativen Cloudflare-Visionmodell",
-        "without_illustration": "Das PDF wird ohne generierte Illustration erstellt.",
         "pdf_error": "Das PDF konnte nicht erstellt werden: {error}",
         "person_1": "Foto Person 1 hochladen",
         "person_2": "Foto Person 2 hochladen",
@@ -71,10 +45,7 @@ TEXT = {
         "upload_warning": "Bitte lade beide Fotos hoch, damit die Charaktere analysiert werden können.",
         "spinner": "Fünf Gedichtseiten und passende Illustrationen werden erstellt …",
         "story_title": "📜 Dein persönliches Märchenbuch",
-        "fallback": "Das Modell {model} war vorübergehend nicht verfügbar. Gedicht und Illustration wurden mit einem Ausweichmodell erstellt.",
-        "incomplete_output": "Das Modell hat für eine Seite kein Gedicht mit 12 Zeilen in 3 Strophen à 4 Zeilen und keine Illustration geliefert. Bitte versuche es erneut.",
-        "incomplete_poem_only": "Das Modell hat nicht fünf Gedichte mit jeweils 12 Zeilen in 3 Strophen à 4 Zeilen geliefert. Bitte versuche es erneut.",
-        "quota_error": "Das Kontingent für die Gemini-Bildgenerierung dieses Projekts ist ausgeschöpft (die API meldet ein Free-Tier-Limit von 0). Prüfe die Projektlimits und Abrechnung. Ein Fallback-Modell kann bei ebenfalls ausgeschöpftem Kontingent auch fehlschlagen.\n\nHinweis: Laut API kannst du es in {retry_delay} erneut versuchen.",
+        "quota_error": "Das Kontingent für die Gemini-Bildgenerierung dieses Projekts ist ausgeschöpft (die API meldet ein Free-Tier-Limit von 0). Prüfe die Projektlimits und Abrechnung.\n\nHinweis: Laut API kannst du es in {retry_delay} erneut versuchen.",
         "retry_later": "einer Weile",
         "missing_key": "Kein API-Schlüssel in `.streamlit/secrets.toml` gefunden!",
         "error": "Beim Erstellen der Geschichte ist ein Fehler aufgetreten: {error}",
@@ -90,18 +61,6 @@ TEXT = {
         "styles": ["Watercolor & enchanted forest", "Classic royal fairytale", "Star journey & starlight", "Rustic forest romance"],
         "illustration_caption": "Generated fairytale illustration",
         "download_poem": "Download poem",
-        "continue_without_image": "Continue without image generation",
-        "poem_only_spinner": "Generating the poem without image generation …",
-        "poem_only_error": "The poem could not be generated without an image: {error}",
-        "cloudflare_fallback": "Gemini is unavailable. Trying Cloudflare as a fallback.",
-        "cloudflare_image_error": "Cloudflare generated the poem but could not generate an image: {error} You can continue without an image.",
-        "some_illustrations_missing": "At least one illustration could not be generated. Use the button below to continue without images.",
-        "cloudflare_error": "The Cloudflare fallback also failed: {error}",
-        "cloudflare_auth_error": "Cloudflare rejected authentication. Check the account ID and create a Workers AI API token in the Cloudflare dashboard under Workers AI. A manually created token needs both Workers AI - Read and Workers AI - Edit permissions. Replace CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in this app's secrets.toml.",
-        "cloudflare_auth_docs": "Cloudflare guide: create a Workers AI API token",
-        "cloudflare_license_notice": "Cloudflare requires agreement to a license and acceptable-use policy for this vision model. These terms include a representation that the user is not domiciled in the EU and the company does not have its principal place of business in the EU. If that does not apply to you, do not submit the agreement. The fallback has been switched to a different Cloudflare vision model.",
-        "cloudflare_vision_docs": "Information about the alternative Cloudflare vision model",
-        "without_illustration": "The PDF will be created without a generated illustration.",
         "pdf_error": "The PDF could not be created: {error}",
         "person_1": "Upload photo of person 1",
         "person_2": "Upload photo of person 2",
@@ -111,10 +70,7 @@ TEXT = {
         "upload_warning": "Please upload both photos so the characters can be analyzed.",
         "spinner": "Creating five poem pages and matching illustrations …",
         "story_title": "📜 Your personal fairytale book",
-        "fallback": "The model {model} was temporarily unavailable. The poem and illustration were generated with a fallback model.",
-        "incomplete_output": "The model did not return a 12-line poem in 3 stanzas of 4 lines and an illustration for a page. Please try again.",
-        "incomplete_poem_only": "The model did not return five 12-line poems in 3 stanzas of 4 lines each. Please try again.",
-        "quota_error": "The Gemini image-generation quota for this project has been exhausted (the API reports a free-tier limit of 0). Check the project limits and billing. A fallback model can also fail if its quota is exhausted.\n\nNote: The API says you can try again in {retry_delay}.",
+        "quota_error": "The Gemini image-generation quota for this project has been exhausted (the API reports a free-tier limit of 0). Check the project limits and billing.\n\nNote: The API says you can try again in {retry_delay}.",
         "retry_later": "a while",
         "missing_key": "No API key found in `.streamlit/secrets.toml`!",
         "error": "An error occurred while creating the story: {error}",
@@ -130,18 +86,6 @@ TEXT = {
         "styles": ["Aquarelle et forêt enchantée", "Conte royal classique", "Voyage parmi les étoiles", "Romance rustique en forêt"],
         "illustration_caption": "Illustration de conte générée",
         "download_poem": "Télécharger le poème",
-        "continue_without_image": "Continuer sans générer d’image",
-        "poem_only_spinner": "Création du poème sans génération d’image …",
-        "poem_only_error": "Impossible de créer le poème sans image : {error}",
-        "cloudflare_fallback": "Gemini est indisponible. Tentative de recours à Cloudflare.",
-        "cloudflare_image_error": "Cloudflare a créé le poème, mais n’a pas pu générer d’image : {error} Vous pouvez continuer sans image.",
-        "some_illustrations_missing": "Au moins une illustration n’a pas pu être créée. Utilisez le bouton ci-dessous pour continuer sans images.",
-        "cloudflare_error": "Le recours à Cloudflare a également échoué : {error}",
-        "cloudflare_auth_error": "Cloudflare a refusé l’authentification. Vérifiez l’identifiant du compte et créez un jeton API Workers AI dans le tableau de bord Cloudflare, sous Workers AI. Un jeton créé manuellement doit avoir les autorisations « Workers AI - Read » et « Workers AI - Edit ». Remplacez CLOUDFLARE_ACCOUNT_ID et CLOUDFLARE_API_TOKEN dans le fichier secrets.toml de cette application.",
-        "cloudflare_auth_docs": "Guide Cloudflare : créer un jeton API Workers AI",
-        "cloudflare_license_notice": "Cloudflare exige l’acceptation d’une licence et d’une politique d’utilisation pour ce modèle visuel. Ces conditions comprennent une déclaration indiquant que l’utilisateur ne réside pas dans l’UE et que l’entreprise n’y a pas son siège principal. Si cela ne s’applique pas à vous, n’acceptez pas ces conditions. Le modèle visuel de secours Cloudflare a été remplacé par un autre.",
-        "cloudflare_vision_docs": "Informations sur l’autre modèle visuel Cloudflare",
-        "without_illustration": "Le PDF sera créé sans illustration générée.",
         "pdf_error": "Impossible de créer le PDF : {error}",
         "person_1": "Importer la photo de la personne 1",
         "person_2": "Importer la photo de la personne 2",
@@ -151,10 +95,7 @@ TEXT = {
         "upload_warning": "Veuillez importer les deux photos pour permettre l’analyse des personnages.",
         "spinner": "Création de cinq pages de poèmes et d’illustrations assorties …",
         "story_title": "📜 Votre livre de conte personnalisé",
-        "fallback": "Le modèle {model} était temporairement indisponible. Le poème et l’illustration ont été créés avec un modèle de secours.",
-        "incomplete_output": "Le modèle n’a pas fourni un poème de 12 vers en 3 strophes de 4 vers et une illustration pour une page. Veuillez réessayer.",
-        "incomplete_poem_only": "Le modèle n’a pas fourni cinq poèmes de 12 vers en 3 strophes de 4 vers chacun. Veuillez réessayer.",
-        "quota_error": "Le quota de génération d’images Gemini de ce projet est épuisé (l’API indique une limite gratuite de 0). Vérifiez les limites du projet et la facturation. Un modèle de secours peut aussi échouer si son quota est épuisé.\n\nRemarque : l’API indique que vous pouvez réessayer dans {retry_delay}.",
+        "quota_error": "Le quota de génération d’images Gemini de ce projet est épuisé (l’API indique une limite gratuite de 0). Vérifiez les limites du projet et la facturation.\n\nRemarque : l’API indique que vous pouvez réessayer dans {retry_delay}.",
         "retry_later": "quelque temps",
         "missing_key": "Aucune clé API trouvée dans `.streamlit/secrets.toml` !",
         "error": "Une erreur s’est produite lors de la création du conte : {error}",
@@ -170,18 +111,6 @@ TEXT = {
         "styles": ["Acuarela y bosque encantado", "Cuento clásico de reyes", "Viaje entre estrellas", "Romance rústico en el bosque"],
         "illustration_caption": "Ilustración de cuento generada",
         "download_poem": "Descargar poema",
-        "continue_without_image": "Continuar sin generar imagen",
-        "poem_only_spinner": "Creando el poema sin generar una imagen …",
-        "poem_only_error": "No se pudo crear el poema sin imagen: {error}",
-        "cloudflare_fallback": "Gemini no está disponible. Se intentará usar Cloudflare como alternativa.",
-        "cloudflare_image_error": "Cloudflare creó el poema, pero no pudo generar una imagen: {error} Puedes continuar sin imagen.",
-        "some_illustrations_missing": "No se pudo generar al menos una ilustración. Usa el botón de abajo para continuar sin imágenes.",
-        "cloudflare_error": "El recurso alternativo de Cloudflare también falló: {error}",
-        "cloudflare_auth_error": "Cloudflare rechazó la autenticación. Comprueba el ID de cuenta y crea un token de API de Workers AI en el panel de Cloudflare, en Workers AI. Un token creado manualmente necesita los permisos «Workers AI - Read» y «Workers AI - Edit». Sustituye CLOUDFLARE_ACCOUNT_ID y CLOUDFLARE_API_TOKEN en el archivo secrets.toml de esta aplicación.",
-        "cloudflare_auth_docs": "Guía de Cloudflare: crear un token de API de Workers AI",
-        "cloudflare_license_notice": "Cloudflare exige aceptar una licencia y una política de uso para este modelo de visión. Estas condiciones incluyen declarar que el usuario no reside en la UE y que la empresa no tiene allí su sede principal. Si no es tu caso, no aceptes las condiciones. El modelo de visión alternativo de Cloudflare ya se ha cambiado.",
-        "cloudflare_vision_docs": "Información sobre el modelo de visión alternativo de Cloudflare",
-        "without_illustration": "El PDF se creará sin ilustración generada.",
         "pdf_error": "No se pudo crear el PDF: {error}",
         "person_1": "Subir foto de la persona 1",
         "person_2": "Subir foto de la persona 2",
@@ -191,10 +120,7 @@ TEXT = {
         "upload_warning": "Sube ambas fotos para poder analizar a los personajes.",
         "spinner": "Creando cinco páginas de poemas e ilustraciones a juego …",
         "story_title": "📜 Tu cuento personalizado",
-        "fallback": "El modelo {model} no estaba disponible temporalmente. El poema y la ilustración se crearon con un modelo alternativo.",
-        "incomplete_output": "El modelo no devolvió un poema de 12 versos en 3 estrofas de 4 versos y una ilustración para una página. Inténtalo de nuevo.",
-        "incomplete_poem_only": "El modelo no devolvió cinco poemas de 12 versos en 3 estrofas de 4 versos cada uno. Inténtalo de nuevo.",
-        "quota_error": "Se ha agotado la cuota de generación de imágenes de Gemini para este proyecto (la API indica un límite gratuito de 0). Comprueba los límites del proyecto y la facturación. Un modelo alternativo también puede fallar si ha agotado su cuota.\n\nAviso: la API indica que puedes volver a intentarlo en {retry_delay}.",
+        "quota_error": "Se ha agotado la cuota de generación de imágenes de Gemini para este proyecto (la API indica un límite gratuito de 0). Comprueba los límites del proyecto y la facturación.\n\nAviso: la API indica que puedes volver a intentarlo en {retry_delay}.",
         "retry_later": "un tiempo",
         "missing_key": "No se encontró la clave de API en `.streamlit/secrets.toml`.",
         "error": "Se produjo un error al crear el cuento: {error}",
@@ -210,18 +136,6 @@ TEXT = {
         "styles": ["Acquerello e foresta incantata", "Fiaba classica di corte", "Viaggio tra le stelle", "Romantico bosco rustico"],
         "illustration_caption": "Illustrazione fiabesca generata",
         "download_poem": "Scarica la poesia",
-        "continue_without_image": "Continua senza generare immagini",
-        "poem_only_spinner": "Creazione della poesia senza generare immagini …",
-        "poem_only_error": "Impossibile creare la poesia senza immagini: {error}",
-        "cloudflare_fallback": "Gemini non è disponibile. Verrà provato Cloudflare come alternativa.",
-        "cloudflare_image_error": "Cloudflare ha creato la poesia, ma non è riuscito a generare un’immagine: {error} Puoi continuare senza immagine.",
-        "some_illustrations_missing": "Non è stato possibile creare almeno un’illustrazione. Usa il pulsante qui sotto per continuare senza immagini.",
-        "cloudflare_error": "Anche il fallback Cloudflare non è riuscito: {error}",
-        "cloudflare_auth_error": "Cloudflare ha rifiutato l’autenticazione. Controlla l’ID account e crea un token API Workers AI nel dashboard Cloudflare, nella sezione Workers AI. Un token creato manualmente richiede le autorizzazioni «Workers AI - Read» e «Workers AI - Edit». Sostituisci CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN nel file secrets.toml di questa app.",
-        "cloudflare_auth_docs": "Guida Cloudflare: crea un token API Workers AI",
-        "cloudflare_license_notice": "Cloudflare richiede l’accettazione di una licenza e di una policy d’uso per questo modello visivo. Queste condizioni includono la dichiarazione che l’utente non è residente nell’UE e che l’azienda non vi ha la sede principale. Se non è il tuo caso, non accettare le condizioni. Il modello visivo alternativo di Cloudflare è stato sostituito.",
-        "cloudflare_vision_docs": "Informazioni sul modello visivo alternativo Cloudflare",
-        "without_illustration": "Il PDF sarà creato senza illustrazione generata.",
         "pdf_error": "Impossibile creare il PDF: {error}",
         "person_1": "Carica la foto della persona 1",
         "person_2": "Carica la foto della persona 2",
@@ -231,10 +145,7 @@ TEXT = {
         "upload_warning": "Carica entrambe le foto per consentire l’analisi dei personaggi.",
         "spinner": "Creazione di cinque pagine di poesie e illustrazioni abbinate …",
         "story_title": "📜 La tua fiaba personalizzata",
-        "fallback": "Il modello {model} non era temporaneamente disponibile. La poesia e l’illustrazione sono state create con un modello alternativo.",
-        "incomplete_output": "Il modello non ha restituito una poesia di 12 versi in 3 strofe da 4 versi e un’illustrazione per una pagina. Riprova.",
-        "incomplete_poem_only": "Il modello non ha restituito cinque poesie di 12 versi in 3 strofe da 4 versi ciascuna. Riprova.",
-        "quota_error": "La quota di generazione immagini Gemini per questo progetto è esaurita (l’API indica un limite gratuito pari a 0). Controlla i limiti del progetto e la fatturazione. Anche un modello alternativo può non funzionare se la sua quota è esaurita.\n\nNota: l’API indica che puoi riprovare tra {retry_delay}.",
+        "quota_error": "La quota di generazione immagini Gemini per questo progetto è esaurita (l’API indica un limite gratuito pari a 0). Controlla i limiti del progetto e la fatturazione.\n\nNota: l’API indica che puoi riprovare tra {retry_delay}.",
         "retry_later": "un po’ di tempo",
         "missing_key": "Chiave API non trovata in `.streamlit/secrets.toml`.",
         "error": "Si è verificato un errore durante la creazione della fiaba: {error}",
@@ -284,20 +195,57 @@ def is_valid_poem(poem: str) -> bool:
 
 
 def is_distinct_poem(poem: str, previous_poems: list[str]) -> bool:
-    """Reject an exact or near-duplicate poem within the same generated book."""
-    canonical = re.sub(r"\W+", " ", poem.casefold()).strip()
-    if not canonical:
-        return False
-    return all(
-        SequenceMatcher(
-            None,
-            canonical,
-            re.sub(r"\W+", " ", previous.casefold()).strip(),
-            autojunk=False,
-        ).ratio()
-        < 0.85
-        for previous in previous_poems
-    )
+    """Reject empty poems and drafts that reuse most verses from an earlier page."""
+    return bool(re.sub(r"\W+", "", poem)) and repeated_poem_line_count(
+        poem,
+        previous_poems,
+    ) < 4
+
+
+def repeated_poem_line_count(poem: str, previous_poems: list[str]) -> int:
+    """Count verses closely matching an earlier poem, matched one-to-one."""
+    current_lines = [
+        re.sub(r"\W+", " ", line.casefold()).strip()
+        for stanza in parse_poem_stanzas(poem)
+        for line in stanza
+    ]
+    highest_match_count = 0
+    for previous in previous_poems:
+        previous_lines = [
+            re.sub(r"\W+", " ", line.casefold()).strip()
+            for stanza in parse_poem_stanzas(previous)
+            for line in stanza
+        ]
+        matches = sorted(
+            (
+                SequenceMatcher(
+                    None,
+                    current_line,
+                    previous_line,
+                    autojunk=False,
+                ).ratio(),
+                current_index,
+                previous_index,
+            )
+            for current_index, current_line in enumerate(current_lines)
+            for previous_index, previous_line in enumerate(previous_lines)
+            if current_line and previous_line
+        )
+        used_current_lines = set()
+        used_previous_lines = set()
+        matched_count = 0
+        for similarity, current_index, previous_index in reversed(matches):
+            if similarity < 0.9:
+                break
+            if (
+                current_index not in used_current_lines
+                and previous_index not in used_previous_lines
+            ):
+                used_current_lines.add(current_index)
+                used_previous_lines.add(previous_index)
+                matched_count += 1
+        highest_match_count = max(highest_match_count, matched_count)
+    return highest_match_count
 
 
 def derive_poem_title(poem: str) -> str:
@@ -306,49 +254,6 @@ def derive_poem_title(poem: str) -> str:
     if not stanzas or not stanzas[0]:
         raise ValueError("The first poem has no opening line for the cover title.")
     return stanzas[0][0].strip().rstrip(" .!?…")
-
-
-def extract_cloudflare_poem_lines(poem: str) -> list[str]:
-    """Extract poem lines and join wrapped continuations of numbered lines."""
-    poem = re.sub(r"```(?:\w+)?\s*|\s*```", "", poem).strip()
-    lines = []
-    numbered_line_pattern = re.compile(
-        r"^\s*(?:[-*•]\s*)?(?:\(?\d{1,2}[.)]\)?|\d{1,2}:)\s*(.*)$"
-    )
-    has_numbered_lines = any(
-        numbered_line_pattern.match(line) for line in poem.splitlines()
-    )
-    stanza_label_pattern = re.compile(
-        r"(?:\*\*)?stanza\s+\d+(?:\*\*)?:?", re.IGNORECASE
-    )
-    for raw_line in poem.splitlines():
-        line = re.sub(r"^\s{0,3}#{1,6}\s*", "", raw_line).strip()
-        if not line or stanza_label_pattern.fullmatch(line):
-            continue
-        numbered_match = numbered_line_pattern.match(line)
-        if numbered_match:
-            lines.append(numbered_match.group(1).strip().strip("*").strip())
-        elif has_numbered_lines:
-            if lines:
-                lines[-1] = f"{lines[-1]} {line}".strip()
-        else:
-            line = re.sub(r"^\s*(?:[-*•]\s+)", "", line)
-            line = line.strip().strip("*").strip()
-            if line:
-                lines.append(line)
-
-    return lines
-
-
-def normalize_cloudflare_poem(poem: str) -> str:
-    """Normalize common list and stanza formatting while enforcing 12 poem lines."""
-    poem_lines = extract_cloudflare_poem_lines(poem)
-    if len(poem_lines) != 12:
-        return ""
-    return "\n\n".join(
-        "\n".join(poem_lines[index : index + 4])
-        for index in range(0, 12, 4)
-    )
 
 
 def page_story_context(page_number: int) -> str:
@@ -392,251 +297,15 @@ def build_page_prompt(
     Return only the poem, with no title, numbering, headings, explanations, or other text.
 
     Also generate exactly one finished watercolor children's-book illustration for this page.
-    Show the same two main characters in a scene appropriate to this page in the story.
+    Base the illustration on the exact poem you just wrote: depict its setting, actions,
+    and emotional tone. Show the same two main characters acting out that poem, rather
+    than creating a separate scene for the page.
     The output must be an actual image without text, letters, captions, or watermark.
     """
 
 
-class CloudflareAuthenticationError(RuntimeError):
-    pass
-
-
-def cloudflare_api_request(
-    model: str, payload: dict[str, object]
-) -> tuple[bytes, str]:
-    """Call a Workers AI model without exposing credentials in errors."""
-    account_id = st.secrets.get("CLOUDFLARE_ACCOUNT_ID")
-    api_token = st.secrets.get("CLOUDFLARE_API_TOKEN")
-    if not account_id or not api_token:
-        raise RuntimeError(
-            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be configured "
-            "in this app's .streamlit/secrets.toml."
-        )
-
-    endpoint = (
-        "https://api.cloudflare.com/client/v4/accounts/"
-        f"{quote(str(account_id), safe='')}/ai/run/{quote(model, safe='@/-')}"
-    )
-    request = Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=120) as response:
-            return response.read(), response.headers.get("Content-Type", "")
-    except HTTPError as e:
-        if e.code == 401:
-            raise CloudflareAuthenticationError(
-                "Cloudflare Workers AI rejected the configured credentials."
-            ) from e
-        response_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"Cloudflare Workers AI returned HTTP {e.code}: {response_body[:1000]}"
-        ) from e
-
-
-def prepare_cloudflare_vision_image(img1: Image.Image, img2: Image.Image) -> bytes:
-    """Create one compact side-by-side image for the vision model input."""
-    tile_size = (512, 512)
-    collage = Image.new("RGB", (tile_size[0] * 2, tile_size[1]), "white")
-    for index, source in enumerate((img1, img2)):
-        image = ImageOps.contain(source.convert("RGB"), tile_size)
-        x = index * tile_size[0] + (tile_size[0] - image.width) // 2
-        y = (tile_size[1] - image.height) // 2
-        collage.paste(image, (x, y))
-
-    image_buffer = BytesIO()
-    collage.save(image_buffer, format="JPEG", quality=85, optimize=True)
-    return image_buffer.getvalue()
-
-
 class IncompleteGeneratedPageError(RuntimeError):
     pass
-
-
-def cloudflare_generate_poem_and_image_prompt(
-    img1: Image.Image,
-    img2: Image.Image,
-    style: str,
-    output_language: str,
-    page_number: int,
-    previous_poems: list[str],
-    revision_feedback: str | None = None,
-) -> tuple[str, str]:
-    """Use Cloudflare vision to write one story page and describe its image."""
-    previous_context = "\n\n".join(previous_poems)
-    prompt = f"""
-    Analyze both people in the attached side-by-side photos. Preserve their visible hair, glasses,
-    clothing, and other distinguishing features in the illustration description.
-
-    Create page {page_number} of {CAMEO_PAGE_COUNT} in a romantic fairytale photo book in this style:
-    "{style}". Story direction: {page_story_context(page_number)}
-    Continue consistently from these previous page poems:
-    {previous_context or "[This is the opening page.]"}
-
-    {f"IMPORTANT CORRECTION FOR THIS RETRY: {revision_feedback}" if revision_feedback else ""}
-
-    Write a unique romantic poem in {output_language}: exactly 12 numbered lines,
-    grouped into exactly 3 stanzas of 4 lines each. Every stanza must follow the
-    AABB rhyme scheme: lines 1 and 2 rhyme (A), and lines 3 and 4 rhyme (B).
-    In the POEM section, put exactly one complete verse on each physical line,
-    numbered 1. through 12. Do not wrap a verse onto another line or add prose.
-    Put one blank line only after lines 4 and 8. Follow this exact format:
-    1. [first verse]
-    2. [second verse]
-    3. [third verse]
-    4. [fourth verse]
-
-    5. [fifth verse]
-    6. [sixth verse]
-    7. [seventh verse]
-    8. [eighth verse]
-
-    9. [ninth verse]
-    10. [tenth verse]
-    11. [eleventh verse]
-    12. [twelfth verse]
-    Make the poem and scene substantially different from every previous page. Do not reuse
-    any previous line, event, or distinctive phrase, and advance this page's story direction.
-
-    Then write one concise prompt for a matching watercolor children's-book illustration of the same
-    two recognizable people acting out this page's story scene. Request no text, lettering, captions,
-    or watermark.
-
-    Use these exact section headings, each on its own line. Do not omit either section.
-    Keep the numbering 1 through 12 on poem lines only:
-    POEM:
-    [the three stanzas]
-
-    IMAGE_PROMPT:
-    [the visual description for the image generator]
-
-    The image prompt must describe a complete scene with both people, their visible features,
-    the setting, and the requested art style. Do not put the image prompt inside the poem.
-    """
-    response_data, content_type = cloudflare_api_request(
-        CLOUDFLARE_VISION_MODEL,
-        {
-            "prompt": prompt,
-            "image": list(prepare_cloudflare_vision_image(img1, img2)),
-            "max_tokens": 900,
-        },
-    )
-    if "json" not in content_type.lower():
-        raise RuntimeError("Cloudflare returned an unexpected text response format.")
-    envelope = json.loads(response_data)
-    if not envelope.get("success", False):
-        errors_text = "; ".join(
-            str(error.get("message", error))
-            if isinstance(error, dict)
-            else str(error)
-            for error in envelope.get("errors", [])
-        )
-        raise RuntimeError(errors_text or "Cloudflare text generation failed.")
-
-    result = envelope.get("result") or {}
-    response_text = result.get("response") or result.get("description", "")
-    section_pattern = re.compile(
-        r"(?im)^[ \t]*(?:[#>*-][ \t]*)?(?:\*\*)?"
-        r"(POEM|IMAGE(?:[\s_-]*PROMPT)?|ILLUSTRATION(?:[\s_-]*PROMPT)?|"
-        r"IMAGE[\s_-]*DESCRIPTION|VISUAL[\s_-]*DESCRIPTION)"
-        r"[ \t]*:?(?:\*\*)?[ \t]*:?[ \t]*(.*)$"
-    )
-    matches = list(section_pattern.finditer(response_text))
-    sections: dict[str, str] = {}
-    for index, match in enumerate(matches):
-        label = re.sub(r"[\s_-]+", " ", match.group(1).upper()).strip()
-        content_start = match.end()
-        content_end = (
-            matches[index + 1].start()
-            if index + 1 < len(matches)
-            else len(response_text)
-        )
-        content = "\n".join(
-            part
-            for part in (
-                match.group(2).strip(),
-                response_text[content_start:content_end].strip(),
-            )
-            if part
-        ).strip()
-        sections[label] = content
-
-    poem = sections.get("POEM", response_text).strip()
-    poem_lines = extract_cloudflare_poem_lines(poem)
-    poem = normalize_cloudflare_poem(poem) or "\n".join(poem_lines)
-    image_prompt = next(
-        (
-            section
-            for label, section in sections.items()
-            if label != "POEM" and section
-        ),
-        "",
-    )
-    if not image_prompt:
-        image_prompt = (
-            "Create one finished watercolor children's-book illustration for a romantic "
-            f"fairytale, in the style '{style}'. Show the same two people together in a "
-            f"scene inspired by this story moment: {page_story_context(page_number)} "
-            f"Visual inspiration from the poem: {poem.replace(chr(10), ' ')} "
-            "Use a magical, expressive setting; no text, lettering, captions, or watermark."
-        )
-    return poem, image_prompt[:1800]
-
-
-def generate_distinct_cloudflare_poem(
-    img1: Image.Image,
-    img2: Image.Image,
-    style: str,
-    output_language: str,
-    page_number: int,
-    previous_poems: list[str],
-) -> tuple[str, str]:
-    """Retry Cloudflare text generation until the poem is valid and distinct."""
-    revision_feedback = None
-    last_failure = "unknown validation failure"
-    for _ in range(MAX_CLOUDFLARE_POEM_ATTEMPTS):
-        poem, image_prompt = cloudflare_generate_poem_and_image_prompt(
-            img1,
-            img2,
-            style,
-            output_language,
-            page_number,
-            previous_poems,
-            revision_feedback,
-        )
-        if not is_valid_poem(poem):
-            candidate_line_count = sum(
-                len(stanza) for stanza in parse_poem_stanzas(poem)
-            )
-            last_failure = (
-                f"the poem parser found {candidate_line_count} candidate verse lines; "
-                "it must find exactly 12, numbered 1. through 12., with one "
-                "complete verse on each physical line and blank lines only after "
-                "lines 4 and 8"
-            )
-        elif not is_distinct_poem(poem, previous_poems):
-            last_failure = (
-                "the poem is too similar to an earlier page; use new wording and "
-                "a different event from this page's story direction"
-            )
-        else:
-            return poem, image_prompt
-        revision_feedback = (
-            f"The previous draft was rejected because {last_failure}. Do not repeat "
-            "that draft. Correct the issue and check all 12 lines before returning."
-        )
-    raise IncompleteGeneratedPageError(
-        f"Cloudflare did not return a distinct poem with 12 lines in three "
-        f"four-line stanzas after "
-        f"{MAX_CLOUDFLARE_POEM_ATTEMPTS} attempts for page {page_number}."
-        f" Last validation issue: {last_failure}."
-    )
 
 
 def generate_gemini_page(
@@ -698,49 +367,6 @@ def generate_gemini_page(
     raise IncompleteGeneratedPageError(
         f"Gemini did not return an illustration for page {page_number}."
     )
-
-
-def cloudflare_generate_image(image_prompt: str) -> bytes:
-    """Generate a PNG illustration using Cloudflare's Workers AI model."""
-    response_data, content_type = cloudflare_api_request(
-        CLOUDFLARE_IMAGE_MODEL,
-        {
-            "prompt": image_prompt,
-            "negative_prompt": "text, letters, words, captions, watermark",
-            "width": 768,
-            "height": 1024,
-            "num_steps": 4,
-        },
-    )
-    if "json" in content_type.lower():
-        envelope = json.loads(response_data)
-        if not envelope.get("success", False):
-            errors_text = "; ".join(
-                str(error.get("message", error))
-                if isinstance(error, dict)
-                else str(error)
-                for error in envelope.get("errors", [])
-            )
-            raise RuntimeError(errors_text or "Cloudflare image generation failed.")
-        encoded_image = (envelope.get("result") or {}).get("image")
-        if not encoded_image:
-            raise RuntimeError("Cloudflare returned no generated image.")
-        image_data = base64.b64decode(encoded_image)
-    else:
-        image_data = response_data
-
-    try:
-        with Image.open(BytesIO(image_data)) as image:
-            image.verify()
-    except Exception as e:
-        raise RuntimeError("Cloudflare returned invalid image data.") from e
-    return image_data
-
-
-def is_cloudflare_vision_license_error(error: Exception) -> bool:
-    """Detect errors that require a user to accept the vision model terms."""
-    message = str(error).lower()
-    return any(term in message for term in ("license", "licence", "acceptable use"))
 
 
 def create_poem_pdf(
@@ -951,11 +577,7 @@ if st.button(text["generate"], type="primary", width="stretch"):
     if not foto_person_1 or not foto_person_2:
         st.warning(text["upload_warning"])
     else:
-        for key in (
-            "generated_pages",
-            "generated_language_code",
-            "cloudflare_fallback_needs_choice",
-        ):
+        for key in ("generated_pages", "generated_language_code"):
             st.session_state.pop(key, None)
 
         with st.spinner(text["spinner"]):
@@ -966,72 +588,34 @@ if st.button(text["generate"], type="primary", width="stretch"):
                 client = None
                 gemini_init_error = e
             generated_pages: list[tuple[str, bytes | None]] = []
-            previous_poems = []
-            cloudflare_used = False
+            previous_poems: list[str] = []
             generation_error = None
             quota_warning_shown = False
 
             for page_number in range(1, CAMEO_PAGE_COUNT + 1):
                 try:
-                    try:
-                        if client is None:
-                            raise IncompleteGeneratedPageError(
-                                "Gemini client could not be initialized."
-                            ) from gemini_init_error
-                        poem, image_data = generate_gemini_page(
-                            client,
-                            img1,
-                            img2,
-                            stil,
-                            text["output_language"],
-                            page_number,
-                            previous_poems,
+                    if client is None:
+                        raise RuntimeError(
+                            "Gemini client could not be initialized."
+                        ) from gemini_init_error
+                    poem, image_data = generate_gemini_page(
+                        client,
+                        img1,
+                        img2,
+                        stil,
+                        text["output_language"],
+                        page_number,
+                        previous_poems,
+                    )
+                except errors.APIError as e:
+                    if e.code == 429 and not quota_warning_shown:
+                        quota_warning_shown = True
+                        retry_delay = format_retry_delay(e) or text["retry_later"]
+                        st.error(
+                            text["quota_error"].format(retry_delay=retry_delay)
                         )
-                    except errors.APIError as e:
-                        if e.code not in GEMINI_FALLBACK_ERROR_CODES:
-                            raise
-                        if e.code == 429 and not quota_warning_shown:
-                            quota_warning_shown = True
-                            retry_delay = format_retry_delay(e) or text["retry_later"]
-                            st.error(
-                                text["quota_error"].format(retry_delay=retry_delay)
-                            )
-                        raise IncompleteGeneratedPageError(
-                            f"Gemini is unavailable for page {page_number}."
-                        ) from e
-
-                except IncompleteGeneratedPageError:
-                    cloudflare_used = True
-                    if page_number == 1:
-                        st.info(text["cloudflare_fallback"])
-                    try:
-                        poem, image_prompt = generate_distinct_cloudflare_poem(
-                            img1,
-                            img2,
-                            stil,
-                            text["output_language"],
-                            page_number,
-                            previous_poems,
-                        )
-                        try:
-                            image_data = cloudflare_generate_image(image_prompt)
-                        except Exception as image_error:
-                            image_data = None
-                            st.error(
-                                text["cloudflare_image_error"].format(
-                                    error=image_error
-                                )
-                            )
-                    except Exception as cloudflare_error:
-                        generation_error = cloudflare_error
-                        if is_cloudflare_vision_license_error(cloudflare_error):
-                            st.info(text["cloudflare_license_notice"])
-                            st.markdown(
-                                f"[{text['cloudflare_vision_docs']}]"
-                                f"({CLOUDFLARE_VISION_DOC_URL})"
-                            )
-                        break
-
+                    generation_error = e
+                    break
                 except Exception as e:
                     generation_error = e
                     break
@@ -1046,34 +630,10 @@ if st.button(text["generate"], type="primary", width="stretch"):
                 previous_poems.append(poem)
 
             if generation_error is not None:
-                if cloudflare_used:
-                    if isinstance(generation_error, CloudflareAuthenticationError):
-                        st.error(text["cloudflare_auth_error"])
-                        st.markdown(
-                            f"[{text['cloudflare_auth_docs']}]"
-                            f"({CLOUDFLARE_REST_API_DOC_URL})"
-                        )
-                    else:
-                        st.error(text["cloudflare_error"].format(error=generation_error))
-                else:
-                    st.error(text["error"].format(error=generation_error))
+                st.error(text["error"].format(error=generation_error))
             elif len(generated_pages) == CAMEO_PAGE_COUNT:
                 st.session_state.generated_pages = generated_pages
                 st.session_state.generated_language_code = language_code
-                st.session_state.cloudflare_fallback_needs_choice = any(
-                    image_data is None for _, image_data in generated_pages
-                )
-
-if (
-    st.session_state.get("cloudflare_fallback_needs_choice")
-    and "generated_pages" in st.session_state
-    and st.button(text["continue_without_image"], type="secondary")
-):
-    st.session_state.generated_pages = [
-        (poem, None) for poem, _ in st.session_state.generated_pages
-    ]
-    st.session_state.cloudflare_fallback_needs_choice = False
-    st.rerun()
 
 if (
     "generated_pages" in st.session_state
@@ -1097,11 +657,6 @@ if (
                 alt=generated_text["illustration_caption"],
             )
         st.markdown(poem)
-
-    if all(image_data is None for _, image_data in pages):
-        st.info(generated_text["without_illustration"])
-    elif any(image_data is None for _, image_data in pages):
-        st.info(generated_text["some_illustrations_missing"])
 
     try:
         pdf_data = create_poem_pdf(pages, book_title)
